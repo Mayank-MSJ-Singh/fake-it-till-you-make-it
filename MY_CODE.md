@@ -31,7 +31,7 @@
 
 Every code reference is a clickable link. For example:
 
-> Open [orchestrator.py → run()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L127-L190) to see the main loop.
+> Open [orchestrator.py → run()](core/orchestrator.py#L127-L190) to see the main loop.
 
 Click that, and your editor will jump to exactly that code. Follow along!
 
@@ -52,7 +52,7 @@ All of this happens in real-time, 12.5 times per second.
 
 ## Starting Up
 
-Everything begins in [main.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/main.py#L1-L39). It's tiny — just creates an `Orchestrator` and calls `run()`:
+Everything begins in [main.py](main.py#L1-L39). It's tiny — just creates an `Orchestrator` and calls `run()`:
 
 ```python
 async def main():
@@ -62,7 +62,7 @@ async def main():
 
 `asyncio.run(main())` creates the event loop that powers the whole system. Without it, `await mic.get_frame()` wouldn't work.
 
-The Orchestrator's [start()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L88-L110) method fires up everything in order:
+The Orchestrator's [start()](core/orchestrator.py#L88-L110) method fires up everything in order:
 
 ```
 1. stt.load_model()     ← Downloads 1B param model, loads onto GPU (~30s first time)
@@ -74,13 +74,13 @@ The Orchestrator's [start()](file:///media/nikki/Data/Projects/AntiGravity/fake-
 
 After this, you see `🎤 Listening... (speak into your mic)`.
 
-> 📂 **Go to:** [orchestrator.py → start()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L88-L110)
+> 📂 **Go to:** [orchestrator.py → start()](core/orchestrator.py#L88-L110)
 
 ---
 
 ## The Main Loop
 
-The heart of everything is [orchestrator.py → run()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L127-L190). It's an infinite loop where each iteration takes ~80ms:
+The heart of everything is [orchestrator.py → run()](core/orchestrator.py#L127-L190). It's an infinite loop where each iteration takes ~80ms:
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -102,25 +102,25 @@ The heart of everything is [orchestrator.py → run()](file:///media/nikki/Data/
 
 **Step 1** — The loop is paced by the microphone. `await mic.get_frame()` blocks until the next 80ms chunk of audio arrives. This is what makes the loop run exactly 12.5 times per second.
 
-> 📂 **Go to:** [orchestrator.py line 143](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L143) — the `await` that paces everything
+> 📂 **Go to:** [orchestrator.py line 143](core/orchestrator.py#L143) — the `await` that paces everything
 
 **Step 2** — The frame gets tossed into the STT's input queue. This is instant — just `queue.put()`.
 
-> 📂 **Go to:** [orchestrator.py line 149](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L149)
+> 📂 **Go to:** [orchestrator.py line 149](core/orchestrator.py#L149)
 
 **Step 3** — We drain ALL available STT results. The worker might have processed multiple frames since our last drain.
 
-> 📂 **Go to:** [orchestrator.py → _drain_and_process_results()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L194-L217) — the drain loop
+> 📂 **Go to:** [orchestrator.py → _drain_and_process_results()](core/orchestrator.py#L194-L217) — the drain loop
 
 **Step 4** — Depends on whether we're in normal mode or flush mode. More on this below.
 
-> 📂 **Go to:** [orchestrator.py lines 158-173](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L158-L173) — the if/else decision
+> 📂 **Go to:** [orchestrator.py lines 158-173](core/orchestrator.py#L158-L173) — the if/else decision
 
 ---
 
 ## Audio Capture
 
-Microphone recording lives in [audio_io.py → MicrophoneInput](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/audio_io.py#L23-L116).
+Microphone recording lives in [audio_io.py → MicrophoneInput](core/audio_io.py#L23-L116).
 
 ```
 Mic Hardware
@@ -149,17 +149,17 @@ asyncio.Queue (thread-safe bridge)
 Returns numpy array (1920,) float32 = 80ms of audio
 ```
 
-The tricky part is the C thread → asyncio bridge. sounddevice's callback runs in a C thread that can't use asyncio. So we save the event loop reference during [start()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/audio_io.py#L77-L95) and use `call_soon_threadsafe()` in the [_callback()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/audio_io.py#L48-L73).
+The tricky part is the C thread → asyncio bridge. sounddevice's callback runs in a C thread that can't use asyncio. So we save the event loop reference during [start()](core/audio_io.py#L77-L95) and use `call_soon_threadsafe()` in the [_callback()](core/audio_io.py#L48-L73).
 
-> 📂 **Go to:** [audio_io.py → _callback()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/audio_io.py#L48-L73) — where audio enters the system
+> 📂 **Go to:** [audio_io.py → _callback()](core/audio_io.py#L48-L73) — where audio enters the system
 >
-> 📂 **Go to:** [audio_io.py → get_frame()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/audio_io.py#L106-L116) — where the orchestrator receives it
+> 📂 **Go to:** [audio_io.py → get_frame()](core/audio_io.py#L106-L116) — where the orchestrator receives it
 
 ---
 
 ## The STT Engine
 
-The STT engine lives in [stt_engine.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L1-L86). It wraps the neural network and runs it in a dedicated thread.
+The STT engine lives in [stt_engine.py](stt/stt_engine.py#L1-L86). It wraps the neural network and runs it in a dedicated thread.
 
 ### Why a dedicated thread?
 
@@ -167,11 +167,11 @@ The model uses **streaming contexts** (`mimi.streaming()` and `lm_gen.streaming(
 
 An async function can't hold a context manager open permanently (it would need to yield between frames, breaking the context). So we use a thread that opens the context once and loops forever.
 
-> 📂 **Go to:** [stt_engine.py → _worker()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L313-L390) — the worker loop, the most important function
+> 📂 **Go to:** [stt_engine.py → _worker()](stt/stt_engine.py#L313-L390) — the worker loop, the most important function
 
 ### Loading the model
 
-[load_model()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L171-L224) does two downloads:
+[load_model()](stt/stt_engine.py#L171-L224) does two downloads:
 
 1. **`kyutai/stt-1b-en_fr`** — the main model (transformer + Mimi codec)  
 2. **`kyutai/stt-1b-en_fr-candle`** — the extra heads weights
@@ -187,7 +187,7 @@ with safe_open(candle_path, framework="pt") as f:
         lm.extra_heads.append(head)
 ```
 
-> 📂 **Go to:** [stt_engine.py lines 196-214](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L196-L214) — extra heads loading
+> 📂 **Go to:** [stt_engine.py lines 196-214](stt/stt_engine.py#L196-L214) — extra heads loading
 
 ---
 
@@ -244,7 +244,7 @@ Between words, the answer is PAD (token 3). So P(PAD) spikes to 0.997 on every s
 **extra_heads[2]** asks: *"Is the user done speaking?"*
 Between words during a sentence, the answer is NO. The head stays at 0.001. Only when the user genuinely finishes does it rise to 0.9.
 
-> 📂 **Go to:** [stt_engine.py lines 341-356](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L341-L356) — where both outputs are extracted per frame
+> 📂 **Go to:** [stt_engine.py lines 341-356](stt/stt_engine.py#L341-L356) — where both outputs are extracted per frame
 
 ---
 
@@ -256,7 +256,7 @@ The model outputs one text token per frame (every 80ms). But tokens ≠ words. A
 "thinking" → [token("▁th"), token("ink"), token("ing")]
 ```
 
-We buffer tokens and emit the word when we see a BOUNDARY. The logic is in the [worker at lines 358-382](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L358-L382):
+We buffer tokens and emit the word when we see a BOUNDARY. The logic is in the [worker at lines 358-382](stt/stt_engine.py#L358-L382):
 
 ```
 Frame 1: token 365 ("▁So")     → buffer = [365]
@@ -275,11 +275,11 @@ Two trigger conditions:
 
 We MUST emit on PAD. Without it, the **last word** of an utterance stays stuck in the buffer forever (because no new boundary comes after it).
 
-The emitted word flows through [result_queue](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L383-L390) → [_drain_and_process_results()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L194-L217) → [_on_word()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L218-L252).
+The emitted word flows through [result_queue](stt/stt_engine.py#L383-L390) → [_drain_and_process_results()](core/orchestrator.py#L194-L217) → [_on_word()](core/orchestrator.py#L218-L252).
 
-> 📂 **Go to:** [stt_engine.py lines 358-382](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L358-L382) — the buffering logic
+> 📂 **Go to:** [stt_engine.py lines 358-382](stt/stt_engine.py#L358-L382) — the buffering logic
 >
-> 📂 **Go to:** [orchestrator.py → _on_word()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L218-L252) — what happens when a word arrives
+> 📂 **Go to:** [orchestrator.py → _on_word()](core/orchestrator.py#L218-L252) — what happens when a word arrives
 
 ---
 
@@ -299,7 +299,7 @@ Every frame, the STT worker extracts `pr_vad = vad_heads[2][0, 0, 0]` — a floa
 | End-of-sentence pause | rises to ~0.9 |
 | Full silence | ~0.9 |
 
-> 📂 **Go to:** [stt_engine.py lines 341-356](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L341-L356) — where pr_vad is extracted
+> 📂 **Go to:** [stt_engine.py lines 341-356](stt/stt_engine.py#L341-L356) — where pr_vad is extracted
 
 ### The EMA
 
@@ -311,9 +311,9 @@ self.ema.update(dt=FRAME_TIME_SEC, new_value=result.pr_vad)
 
 With attack=0.01 and release=0.01, the EMA tracks the signal almost instantly. This works because the signal is already smooth (no between-word spikes).
 
-> 📂 **Go to:** [ema.py → update()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/ema.py#L45-L69) — the smoothing math
+> 📂 **Go to:** [ema.py → update()](stt/ema.py#L45-L69) — the smoothing math
 >
-> 📂 **Go to:** [orchestrator.py line 209](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L209) — where EMA is updated each frame
+> 📂 **Go to:** [orchestrator.py line 209](core/orchestrator.py#L209) — where EMA is updated each frame
 
 ### The EMA Reset Trick
 
@@ -328,18 +328,18 @@ Without this, the EMA would be at ~1.0 from the previous silence. The first word
 
 By resetting to 0.0, we guarantee the EMA starts from scratch every turn.
 
-> 📂 **Go to:** [orchestrator.py lines 246-249](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L246-L249) — the EMA reset
+> 📂 **Go to:** [orchestrator.py lines 246-249](core/orchestrator.py#L246-L249) — the EMA reset
 
 ### The Decision
 
-[_determine_pause()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L254-L273) checks two things:
+[_determine_pause()](core/orchestrator.py#L254-L273) checks two things:
 
 1. **Is the user currently speaking?** → `conversation_state() == "user_speaking"`
 2. **Is the EMA above 0.6?** → `self.ema.value > PAUSE_THRESHOLD`
 
 Both must be true. If the state is `"waiting_for_user"` or `"bot_speaking"`, we never trigger.
 
-> 📂 **Go to:** [orchestrator.py → _determine_pause()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L254-L273)
+> 📂 **Go to:** [orchestrator.py → _determine_pause()](core/orchestrator.py#L254-L273)
 
 ### Timeline of a Real Pause
 
@@ -364,7 +364,7 @@ Time  │ What User Does     │ pr_vad │ EMA   │ State            │ Actio
 
 When a pause is detected, we can't respond immediately. The STT model has a **0.5s lookahead buffer** — it needs future audio context to predict accurately. So there might be words still in the pipeline.
 
-[_start_flush()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L277-L312) handles this:
+[_start_flush()](core/orchestrator.py#L277-L312) handles this:
 
 ```python
 # Mark when the flush will be done
@@ -380,21 +380,21 @@ for _ in range(num_frames):
 
 The silence frames go into the STT's input queue. The worker processes them (they push any buffered words through the pipeline). Meanwhile, the main loop continues running — it still feeds mic audio and drains results.
 
-When [stt.current_time > stt_end_of_flush_time](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L170-L173), the flush is done and we call [_generate_response()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L315-L356).
+When [stt.current_time > stt_end_of_flush_time](core/orchestrator.py#L170-L173), the flush is done and we call [_generate_response()](core/orchestrator.py#L315-L356).
 
 `current_time` is a property that returns `_frame_count × 0.08` — how much audio the worker has actually processed.
 
-> 📂 **Go to:** [orchestrator.py → _start_flush()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L277-L312) — feeding silence, setting timer
+> 📂 **Go to:** [orchestrator.py → _start_flush()](core/orchestrator.py#L277-L312) — feeding silence, setting timer
 >
-> 📂 **Go to:** [stt_engine.py → current_time](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L155-L167) — how we track flush progress
+> 📂 **Go to:** [stt_engine.py → current_time](stt/stt_engine.py#L155-L167) — how we track flush progress
 >
-> 📂 **Go to:** [orchestrator.py → _generate_response()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L315-L356) — what happens after flush
+> 📂 **Go to:** [orchestrator.py → _generate_response()](core/orchestrator.py#L315-L356) — what happens after flush
 
 ---
 
 ## The State Machine
 
-The conversation state is determined by [conversation.py → conversation_state()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/conversation.py#L52-L82). It looks at the LAST message in chat history:
+The conversation state is determined by [conversation.py → conversation_state()](core/conversation.py#L52-L82). It looks at the LAST message in chat history:
 
 ```
 ┌─────────────────────┐
@@ -444,19 +444,19 @@ self.conversation.add_message_delta("", "user")
 
 This creates `{"role": "user", "content": ""}`. Since content is empty, `conversation_state()` returns `"waiting_for_user"` — pause detection disabled!
 
-When the user says their first word, [add_message_delta("Hello", "user")](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/conversation.py#L84-L128) appends to the empty message: `"" + "Hello" = "Hello"`. It returns `True` because `last_content == ""` (the message WAS empty = this is a new turn).
+When the user says their first word, [add_message_delta("Hello", "user")](core/conversation.py#L84-L128) appends to the empty message: `"" + "Hello" = "Hello"`. It returns `True` because `last_content == ""` (the message WAS empty = this is a new turn).
 
 The orchestrator sees `is_new=True` → resets EMA to 0.0.
 
-> 📂 **Go to:** [conversation.py → add_message_delta()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/conversation.py#L84-L128) — the full logic with comments
+> 📂 **Go to:** [conversation.py → add_message_delta()](core/conversation.py#L84-L128) — the full logic with comments
 >
-> 📂 **Go to:** [orchestrator.py line 350](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L347-L355) — where the empty message is added after responding
+> 📂 **Go to:** [orchestrator.py line 350](core/orchestrator.py#L347-L355) — where the empty message is added after responding
 
 ---
 
 ## Silence Detection
 
-If nobody speaks for 7 seconds, [_check_silence()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L358-L381) kicks in:
+If nobody speaks for 7 seconds, [_check_silence()](core/orchestrator.py#L358-L381) kicks in:
 
 ```python
 if elapsed > SILENCE_TIMEOUT:
@@ -465,7 +465,7 @@ if elapsed > SILENCE_TIMEOUT:
 
 Adding `"..."` to the conversation changes state from `"waiting_for_user"` to `"user_speaking"` (because `"..."` is non-empty content). On the next frame, `_determine_pause()` fires (EMA is already ~1.0 since nobody is speaking), and the bot responds to the silence.
 
-> 📂 **Go to:** [orchestrator.py → _check_silence()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L358-L381)
+> 📂 **Go to:** [orchestrator.py → _check_silence()](core/orchestrator.py#L358-L381)
 
 ---
 
@@ -514,13 +514,13 @@ Three threads run simultaneously:
                      _drain_and_process_results)
 ```
 
-> 📂 **Go to:** [stt_engine.py lines 127-145](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py#L127-L145) — the queue definitions and why each queue type is used
+> 📂 **Go to:** [stt_engine.py lines 127-145](stt/stt_engine.py#L127-L145) — the queue definitions and why each queue type is used
 
 ---
 
 ## Config
 
-All tunable values live in [config.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/config.py#L1-L80). Every value matches Unmute's production settings.
+All tunable values live in [config.py](core/config.py#L1-L80). Every value matches Unmute's production settings.
 
 | Parameter | Value | Used in | Purpose |
 |-----------|-------|---------|---------|
@@ -533,7 +533,7 @@ All tunable values live in [config.py](file:///media/nikki/Data/Projects/AntiGra
 | `STT_DELAY_SEC` | 0.5s | stt_engine, orchestrator | Model's lookahead buffer |
 | `SILENCE_TIMEOUT` | 7.0s | orchestrator | Seconds before "..." |
 
-> 📂 **Go to:** [config.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/config.py#L1-L80) — full config with comments explaining every value
+> 📂 **Go to:** [config.py](core/config.py#L1-L80) — full config with comments explaining every value
 
 ---
 
@@ -548,7 +548,7 @@ The STT → pause detection pipeline is complete. What's left:
 | 7 | **Interruption** — Clear speaker queue when user talks over bot | TODO |
 | 8 | **Fillers** — Play "Hmm", "Uh-huh" while user speaks | TODO |
 
-The response generation happens in [orchestrator.py → _generate_response()](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py#L315-L356). The TODO on line 337 is where the LLM call will go.
+The response generation happens in [orchestrator.py → _generate_response()](core/orchestrator.py#L315-L356). The TODO on line 337 is where the LLM call will go.
 
 ---
 
@@ -556,10 +556,10 @@ The response generation happens in [orchestrator.py → _generate_response()](fi
 
 | File | Lines | What It Does |
 |------|-------|-------------|
-| [main.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/main.py) | 39 | Entry point — just starts the orchestrator |
-| [core/config.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/config.py) | 80 | All tunable constants |
-| [core/audio_io.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/audio_io.py) | 200 | MicrophoneInput + SpeakerOutput |
-| [core/conversation.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/conversation.py) | 170 | Chat history + state machine |
-| [core/orchestrator.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/core/orchestrator.py) | 381 | Main loop — the brain |
-| [stt/stt_engine.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/stt_engine.py) | 390 | STT model + GPU worker thread |
-| [stt/ema.py](file:///media/nikki/Data/Projects/AntiGravity/fake-it-till-you-make-it/stt/ema.py) | 69 | EMA filter |
+| [main.py](main.py) | 39 | Entry point — just starts the orchestrator |
+| [core/config.py](core/config.py) | 80 | All tunable constants |
+| [core/audio_io.py](core/audio_io.py) | 200 | MicrophoneInput + SpeakerOutput |
+| [core/conversation.py](core/conversation.py) | 170 | Chat history + state machine |
+| [core/orchestrator.py](core/orchestrator.py) | 381 | Main loop — the brain |
+| [stt/stt_engine.py](stt/stt_engine.py) | 390 | STT model + GPU worker thread |
+| [stt/ema.py](stt/ema.py) | 69 | EMA filter |
