@@ -76,11 +76,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import moshi.models
-from huggingface_hub import hf_hub_download
-from safetensors import safe_open
 
 
 @dataclass
@@ -171,46 +167,37 @@ class STTEngine:
     def load_model(self):
         """Load the STT model WITH extra heads onto the GPU.
 
-        Two downloads happen:
-          1. kyutai/stt-1b-en_fr — main model (transformer + Mimi codec)
-          2. kyutai/stt-1b-en_fr-candle — extra heads weights only
+        Uses kyutai/stt-1b-en_fr-candle — a single repo that includes:
+          - The main transformer (1B params)
+          - Mimi audio codec
+          - 4 extra classification heads for semantic VAD
+          - SentencePiece tokenizer
 
-        The PyTorch checkpoint doesn't include extra heads (they were
-        added later for the Candle/Rust implementation). So we grab them
-        from the Candle checkpoint and attach them to the PyTorch model.
+        The candle repo's config.json has extra_heads_num_heads=4,
+        so the model is created with 4 heads and their weights are
+        loaded automatically from model.safetensors. No manual
+        weight injection needed — everything in one download.
+
+        The "candle" name just means it was originally packaged for
+        the Rust (Candle) server, but the safetensors format works
+        perfectly with PyTorch too.
         """
-        print("Loading STT model...")
+        print("Loading STT model (kyutai/stt-1b-en_fr-candle)...")
 
-        # Download and load the main model from HuggingFace
-        info = moshi.models.loaders.CheckpointInfo.from_hf_repo("kyutai/stt-1b-en_fr")
-        self.mimi = info.get_mimi(device=self.device)
-        lm = info.get_moshi(device=self.device, dtype=torch.bfloat16)
-
-        # === LOAD EXTRA HEADS ===
-        # The extra heads are 4 classification heads, each:
-        #   Linear(in=2048, out=6, bias=False)
-        #
-        # They take the transformer's hidden state and classify the
-        # current audio frame. Head 2, class 0 is the pause signal.
-        #
-        # We download the Candle model checkpoint and extract just the
-        # extra_heads weights. Everything else in that file is the same
-        # as the PyTorch model (we don't need it twice).
-        print("Loading extra heads from Candle checkpoint...")
-        candle_path = hf_hub_download(
-            "kyutai/stt-1b-en_fr-candle", "model.safetensors"
+        # Download config + weights from HuggingFace (cached after first run)
+        info = moshi.models.loaders.CheckpointInfo.from_hf_repo(
+            "kyutai/stt-1b-en_fr-candle"
         )
-        with safe_open(candle_path, framework="pt") as f:
-            for i in range(4):
-                # Each head is named "extra_heads.0.weight", "extra_heads.1.weight", etc.
-                weight = f.get_tensor(f"extra_heads.{i}.weight")
-                head = nn.Linear(
-                    2048, 6, bias=False, dtype=torch.bfloat16, device=self.device
-                )
-                head.weight.data = weight.to(device=self.device, dtype=torch.bfloat16)
-                # Attach to the model's existing (empty) extra_heads ModuleList
-                lm.extra_heads.append(head)
-        print(f"  Loaded {len(lm.extra_heads)} extra heads")
+
+        # Load Mimi audio codec (neural audio compressor)
+        self.mimi = info.get_mimi(device=self.device)
+
+        # Load the main transformer model
+        # Because the candle config has extra_heads_num_heads=4,
+        # LMModel.__init__ creates 4 Linear(2048→6) heads automatically,
+        # and load_state_dict fills them with the trained weights.
+        lm = info.get_moshi(device=self.device, dtype=torch.bfloat16)
+        print(f"  Extra heads: {len(lm.extra_heads)} (should be 4)")
 
         # Wrap the transformer in LMGen — this handles sampling/decoding
         # temp=0 means greedy decoding (always pick the most likely token)

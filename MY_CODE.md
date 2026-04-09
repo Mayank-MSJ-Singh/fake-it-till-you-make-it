@@ -171,23 +171,21 @@ An async function can't hold a context manager open permanently (it would need t
 
 ### Loading the model
 
-[load_model()](stt/stt_engine.py#L171-L224) does two downloads:
+[load_model()](stt/stt_engine.py#L170-L211) uses a single HuggingFace repo: **`kyutai/stt-1b-en_fr-candle`**.
 
-1. **`kyutai/stt-1b-en_fr`** — the main model (transformer + Mimi codec)  
-2. **`kyutai/stt-1b-en_fr-candle`** — the extra heads weights
-
-The extra heads aren't in the PyTorch checkpoint — they shipped separately in the Candle format (for Rust). We download that file and attach the weights:
+This repo was originally packaged for the Rust (Candle) server, but the safetensors format works perfectly with PyTorch. The key advantage: its `config.json` includes `extra_heads_num_heads: 4`, so the model is created with 4 classification heads and their trained weights are loaded automatically. No manual injection needed.
 
 ```python
-with safe_open(candle_path, framework="pt") as f:
-    for i in range(4):
-        weight = f.get_tensor(f"extra_heads.{i}.weight")
-        head = nn.Linear(2048, 6, bias=False, ...)
-        head.weight.data = weight
-        lm.extra_heads.append(head)
+# One line — everything included!
+info = CheckpointInfo.from_hf_repo("kyutai/stt-1b-en_fr-candle")
+mimi = info.get_mimi(device="cuda")      # Mimi codec
+lm = info.get_moshi(device="cuda")       # Transformer + 4 extra heads
+tokenizer = info.get_text_tokenizer()     # SentencePiece
 ```
 
-> 📂 **Go to:** [stt_engine.py lines 196-214](stt/stt_engine.py#L196-L214) — extra heads loading
+The PyTorch-only repo (`kyutai/stt-1b-en_fr`) does NOT include the extra heads — its config has `extra_heads_num_heads` defaulting to 0. We verified this by comparing both repos' `config.json` files.
+
+> 📂 **Go to:** [stt_engine.py → load_model()](stt/stt_engine.py#L170-L211) — the simplified single-repo loading
 
 ---
 
