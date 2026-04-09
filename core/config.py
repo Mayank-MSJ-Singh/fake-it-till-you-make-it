@@ -1,43 +1,88 @@
-# ============================================================
-# 🎛️  ALL TUNABLE VALUES — change here, reflects everywhere
-# ============================================================
+"""
+Configuration — All Tunable Values
+====================================
 
-# Audio
+Every magic number in the project lives here. If you want to change
+how the system behaves, this is the ONLY file you need to touch.
+
+These values match Unmute's production settings exactly.
+"""
+
+# ============================================================
+# 🔊  AUDIO
+# ============================================================
+# The Mimi audio codec (from Kyutai) requires exactly 24kHz audio.
+# sounddevice records at this rate, and every frame is 1920 samples
+# which equals exactly 80 milliseconds of audio.
 SAMPLE_RATE = 24_000              # Hz — required by Mimi codec
-SAMPLES_PER_FRAME = 1_920         # 80ms per frame
-FRAME_TIME_SEC = 0.08             # 1920 / 24000
+SAMPLES_PER_FRAME = 1_920         # 80ms per frame (24000 × 0.08)
+FRAME_TIME_SEC = 0.08             # Seconds per frame (1920 / 24000)
 
-# EMA smoothing for pause detection
-# Signal: P(PAD) from text logits — naturally semantic:
-#   - During speech: P(PAD) ≈ 0.0
-#   - Mid-sentence pause: P(PAD) ≈ 0.7 (model knows sentence is incomplete)
-#   - End-of-sentence: P(PAD) ≈ 0.999 (model knows speech is done)
-EMA_ATTACK_TIME = 0.15            # Smooths over 1-frame between-word gaps
-EMA_RELEASE_TIME = 0.05           # Fast drop when user resumes speaking
-EMA_INITIAL_VALUE = 1.0           # Start as "paused"
+# ============================================================
+# 📊  EMA (Exponential Moving Average) for Pause Detection
+# ============================================================
+# The raw pause signal comes from extra_heads[2][0] — one of the
+# model's classification heads. This signal is already smooth:
+#   - During speech (even between words): ~0.001
+#   - End-of-sentence silence: rises to ~0.9
+#
+# Because the signal is already clean, we barely need to smooth it.
+# attack_time = release_time = 0.01 means the EMA tracks the raw
+# signal almost instantly (99.6% of new value per frame).
+#
+# Matches Unmute exactly: speech_to_text.py lines 87-89
+EMA_ATTACK_TIME = 0.01            # Half-life for RISING signal (speaking → paused)
+EMA_RELEASE_TIME = 0.01           # Half-life for FALLING signal (paused → speaking)
+EMA_INITIAL_VALUE = 1.0           # Start as "paused" (user hasn't spoken yet)
 
-# Pause detection
-# Threshold 0.85 means mid-sentence pauses (P≈0.7 → EMA≈0.7) won't trigger,
-# but end-of-sentence (P≈0.999 → EMA crosses 0.85 in ~480ms) will.
-# No MIN_SPEAKING_TIME needed — the EMA reset to 0.0 on new message start
-# naturally prevents premature triggers (takes ~480ms to rise to 0.85).
-PAUSE_THRESHOLD = 0.85
+# ============================================================
+# ⏸️  PAUSE DETECTION
+# ============================================================
+# When the EMA crosses this threshold, we consider the user done speaking.
+# With extra_heads signal:
+#   - Between words: signal ≈ 0.001 → EMA ≈ 0.001 → no trigger ✅
+#   - Real pause:    signal ≈ 0.9   → EMA ≈ 0.9   → crosses 0.6 → PAUSE ✅
+#
+# Matches Unmute: unmute_handler.py line 387
+PAUSE_THRESHOLD = 0.6
 
-# STT
-STT_WARMUP_FRAMES = 12            # Skip first 12 frames (~960ms) — VAD is noisy during warmup
-STT_DELAY_SEC = 0.5               # Inherent STT buffering delay (same as Unmute)
-FLUSH_FRAMES = 8                  # ceil(0.5 / 0.08) + 1 — silence frames to flush STT
+# ============================================================
+# 🧠  STT (Speech-to-Text) MODEL
+# ============================================================
+# The STT model has a built-in 0.5s delay — it needs to "look ahead"
+# at future audio to make accurate predictions. This means when the
+# user stops speaking, there's 0.5s of audio still buffered in the
+# model that hasn't been transcribed yet.
+#
+# After detecting a pause, we feed silence frames to flush this buffer
+# and push out any remaining words.
+STT_WARMUP_FRAMES = 12            # Skip first 12 frames (~960ms) — model output is noisy
+STT_DELAY_SEC = 0.5               # Model's lookahead buffer (same as Unmute)
+FLUSH_FRAMES = 8                  # ceil(0.5 / 0.08) + 1 — silence frames to flush
 
-# Silence
-SILENCE_TIMEOUT = 7.0             # Seconds of silence before bot responds with "..."
+# ============================================================
+# 🤫  SILENCE DETECTION
+# ============================================================
+# If the user doesn't speak for this long after the bot finishes,
+# inject "..." into the conversation. This triggers a bot response
+# to fill the awkward silence (like "Are you still there?").
+SILENCE_TIMEOUT = 7.0             # Seconds of silence before bot responds
 
-# Interruption (Phase 7)
-INTERRUPTION_VAD_THRESHOLD = 0.4  # Below this → user started speaking during bot
-UNINTERRUPTIBLE_TIME = 3.0        # Seconds grace period after bot starts
+# ============================================================
+# 🛑  INTERRUPTION (Phase 7 — not yet implemented)
+# ============================================================
+# When the bot is speaking and the user starts talking over it,
+# these values control when to cut the bot off.
+INTERRUPTION_VAD_THRESHOLD = 0.4  # EMA below this = user is speaking
+UNINTERRUPTIBLE_TIME = 3.0        # Grace period at conversation start (echo issues)
 
-# Fillers (Phase 8)
+# ============================================================
+# 💬  FILLERS (Phase 8 — not yet implemented)
+# ============================================================
+# "Hmm", "Uh-huh" sounds to play while the user is speaking,
+# to make the bot feel more human.
 FILLER_EMA_LOW = 0.3              # Below = user actively speaking
 FILLER_EMA_HIGH = 0.55            # Above = probably end of sentence
 FILLER_COOLDOWN = 6.0             # Seconds between fillers
-FILLER_MIN_SPEAKING_TIME = 3.0    # Don't filler too early
+FILLER_MIN_SPEAKING_TIME = 3.0    # Don't filler too early in the turn
 FILLER_VOLUME = 0.7               # 70% of normal volume
