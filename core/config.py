@@ -47,6 +47,34 @@ EMA_INITIAL_VALUE = 1.0           # Start as "paused" (user hasn't spoken yet)
 PAUSE_THRESHOLD = 0.6
 
 # ============================================================
+# 🤖  LLM (Large Language Model)
+# ============================================================
+# The model that generates responses. Downloads automatically from
+# HuggingFace on first run. Change LLM_MODEL_ID to swap models.
+#
+# Tested models:
+#   - "google/gemma-3-1b-it"     (1B params, ~2GB VRAM, fast)
+#   - "google/gemma-3-4b-it"     (4B params, ~8GB VRAM, smarter)
+#   - "Qwen/Qwen2.5-1.5B-Instruct" (1.5B, ~3GB VRAM)
+#
+# Set LLM_DEVICE to "cpu" to run the LLM on CPU if GPU VRAM is tight
+# (STT already uses ~2.3GB). On a 6GB GPU, use "cpu" for the LLM.
+LLM_MODEL_ID = "google/gemma-3-1b-it"  # HuggingFace model ID
+LLM_DEVICE = "cuda"                     # "cuda" or "cpu"
+LLM_DTYPE = "bfloat16"                  # "bfloat16", "float16", or "float32"
+LLM_MAX_NEW_TOKENS = 150                # Max tokens in bot response
+LLM_TEMPERATURE = 0.7                   # 0.0 = deterministic, 1.0 = creative
+LLM_TOP_P = 0.9                         # Nucleus sampling threshold
+LLM_REPETITION_PENALTY = 1.1            # Penalize repeated tokens (1.0 = off)
+LLM_SYSTEM_PROMPT = ("""
+You are my frieng Emily
+
+Don't use emoji, symbol, number, or any special characters. Only words
+
+"""
+)
+
+# ============================================================
 # 🧠  STT (Speech-to-Text) MODEL
 # ============================================================
 # The STT model has a built-in 0.5s delay — it needs to "look ahead"

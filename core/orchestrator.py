@@ -37,6 +37,7 @@ from core.config import (
     PAUSE_THRESHOLD, SILENCE_TIMEOUT,
 )
 from core.conversation import Conversation
+from llm.llm_engine import LLMEngine
 from stt.stt_engine import STTEngine
 from stt.ema import ExponentialMovingAverage
 
@@ -57,6 +58,7 @@ class Orchestrator:
         self.mic = MicrophoneInput()       # Records audio from system mic
         self.speaker = SpeakerOutput()     # Plays TTS audio (Phase 6)
         self.stt = STTEngine(device=device)  # GPU STT model + worker thread
+        self.llm = LLMEngine()             # Language model for responses
         self.conversation = Conversation()   # Chat history + state machine
 
         # === PAUSE DETECTION ===
@@ -90,12 +92,14 @@ class Orchestrator:
 
         Order matters:
           1. Load STT model (downloads if not cached, ~30s first time)
-          2. Warmup STT (compiles CUDA kernels, ~5s)
-          3. Start mic (begins recording immediately)
-          4. Start speaker (begins playback loop, plays silence until fed audio)
-          5. Start STT worker thread (opens streaming context, waits for frames)
+          2. Load LLM model (downloads if not cached, ~30s first time)
+          3. Warmup STT (compiles CUDA kernels with dummy frames, ~5s)
+          4. Start mic (begins recording immediately)
+          5. Start speaker (begins playback loop, plays silence until fed audio)
+          6. Start STT worker thread (opens streaming context, waits for frames)
         """
-        self.stt.load_model()   # Downloads model, loads onto GPU
+        self.stt.load_model()   # Downloads STT model, loads onto GPU
+        self.llm.load_model()   # Downloads LLM, loads onto configured device
         self.stt.warmup()       # Compiles CUDA kernels with dummy frames
 
         self.mic.start()        # Opens mic stream, callback starts firing
@@ -319,11 +323,12 @@ class Orchestrator:
         all silence frames have been processed and any late words have
         been collected.
 
-        This mirrors Unmute's _generate_response() → _tts_loop() flow.
-
-        Currently a placeholder — just echoes what the user said.
-        Phase 5 will connect this to an LLM (Ollama/Qwen).
-        Phase 6 will add TTS (PocketTTS) for spoken responses.
+        Flow:
+          1. Drain any final STT results from the flush
+          2. Get cleaned conversation history
+          3. Send to LLM → get response text
+          4. Add response to conversation
+          5. Transition to waiting_for_user state
         """
         # Drain any final words that arrived during the flush
         self._drain_and_process_results()
@@ -332,10 +337,16 @@ class Orchestrator:
         user_text = self.conversation.get_last_user_text()
         print(f"  📝 User said: \"{user_text.strip()}\"")
 
-        # --- TODO: Replace with real LLM call (Phase 5) ---
-        fake_response = f"I heard you say: {user_text.strip()}"
-        self.conversation.add_message_delta(fake_response, "assistant")
-        print(f"\n[BOT] {fake_response}")
+        # Get cleaned conversation history (no empty messages, merged duplicates)
+        # and send to the LLM for a response.
+        messages = self.conversation.preprocessed_messages()
+        print(f"  🤖 Thinking...", end="", flush=True)
+        response = self.llm.generate(messages)
+        print(f" done!")
+
+        # Add bot response to conversation history
+        self.conversation.add_message_delta(response, "assistant")
+        print(f"\n[BOT] {response}")
         print()
 
         # === CRITICAL: Transition to waiting_for_user ===
