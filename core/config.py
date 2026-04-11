@@ -89,6 +89,17 @@ STT_DELAY_SEC = 0.5               # Model's lookahead buffer (same as Unmute)
 FLUSH_FRAMES = 8                  # ceil(0.5 / 0.08) + 1 — silence frames to flush
 
 # ============================================================
+# 🔈  TTS (Text-to-Speech) — Pocket TTS
+# ============================================================
+# Pocket TTS is a lightweight TTS from Kyutai Labs.
+# Runs on CPU (no GPU needed), outputs 24kHz audio — same as our mic!
+#
+# Built-in voices: alba, marius, javert, jean, fantine, cosette, eponine, azelma
+# You can also pass a path to a .wav file for voice cloning.
+TTS_VOICE = "alba"                # Built-in voice name or path to .wav file
+TTS_DEVICE = "cpu"                # "cpu" recommended (keeps GPU free for STT + LLM)
+
+# ============================================================
 # 🤫  SILENCE DETECTION
 # ============================================================
 # If the user doesn't speak for this long after the bot finishes,
