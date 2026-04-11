@@ -69,35 +69,29 @@ class TTSEngine:
         audio = audio_tensor.cpu().float().numpy()
         return audio
 
-    def synthesize_stream(self, text_generator):
-        """
-        True streaming synthesis: feed text incrementally, yield audio chunks.
+    def synthesize_stream(self, text: str):
+        """Stream synthesis: yields audio chunks as they're generated.
 
-        This method uses Pocket TTS's built-in `generate_audio_stream` API.
-        It consumes a generator of text chunks and yields audio frames as they
-        are synthesized — without waiting for the full text.
+        Uses pocket_tts's generate_audio_stream(voice_state, text) API.
+        Takes the full text string but starts yielding audio chunks
+        immediately (low TTFB), similar to ONNX stream().
 
         Args:
-            text_generator: A generator that yields strings (text chunks)
-                            as they become available (e.g., from an LLM).
+            text: The full text string to synthesize.
 
         Yields:
-            numpy float32 arrays, each a chunk of audio at the model's sample rate.
-            Chunk sizes are determined by Pocket TTS (typically ~0.1s each).
+            numpy float32 arrays (audio chunks) at the model's sample rate.
         """
-        # Pocket TTS's native streaming method
-        audio_stream = self.model.generate_audio_stream(
-            self.voice_state,
-            text_generator,
-            stream_chunk_size=SAMPLES_PER_FRAME,   # optional, matches speaker frame size
-            frames_after_eos=None,                 # optional: extra frames after sentence end
-            copy_state=True                        # optional: copy state for each call
-        )
-        for audio_chunk in audio_stream:
-            # Convert from torch tensor to numpy float32 if needed
+        if not text.strip():
+            return
+
+        for audio_chunk in self.model.generate_audio_stream(
+            self.voice_state, text
+        ):
             if isinstance(audio_chunk, torch.Tensor):
-                audio_chunk = audio_chunk.cpu().float().numpy()
-            yield audio_chunk
+                yield audio_chunk.cpu().float().numpy()
+            else:
+                yield np.asarray(audio_chunk, dtype=np.float32)
 
     def synthesize_to_chunks(self, text: str) -> list[np.ndarray]:
         """Convert text to a list of speaker-ready audio chunks (blocking).
