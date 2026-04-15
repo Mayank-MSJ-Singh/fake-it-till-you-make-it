@@ -43,6 +43,7 @@ from core.config import (
     PAUSE_THRESHOLD, SILENCE_TIMEOUT, DEBUG_MODE
 )
 from core.conversation import Conversation
+from core.ui import UIManager
 from llm.llm_engine import LLMEngine
 from stt.stt_engine import STTEngine
 from stt.ema import ExponentialMovingAverage
@@ -106,6 +107,11 @@ class Orchestrator:
         # Mirrors Unmute's self.stt_end_of_flush_time
         self.stt_end_of_flush_time: float | None = None
 
+        # === TERMINAL UI ===
+        self.ui = UIManager()
+        from rich.live import Live
+        self.live_context = Live(self.ui.get_renderable(), auto_refresh=False, screen=True)
+
     # ================================================================
     # LIFECYCLE
     # ================================================================
@@ -166,50 +172,62 @@ class Orchestrator:
           4. decide                 — check pause/silence, or monitor flush
         """
         await self.start()
+        self._start_time = time.time()
 
         try:
-            while self.running:
+            with self.live_context as live:
+                while self.running:
+                    # Update UI state before processing this frame
+                    self.ui.update(
+                        history=self.conversation.chat_history,
+                        state=self.conversation.conversation_state(),
+                        ema=self.ema.value,
+                        time_sec=time.time() - self._start_time if getattr(self, '_start_time', None) else 0.0,
+                        threshold=PAUSE_THRESHOLD,
+                        debug_line=self.ui.debug_line # Keep existing debug lines
+                    )
+                    live.update(self.ui.get_renderable(), refresh=True)
 
-                # ── 1. Get the next audio frame ──
-                # This awaits until the mic callback puts a frame in the queue.
-                # Normally takes ~80ms (one frame period).
-                # If frames are buffered (e.g., after flush), returns instantly.
-                frame = await self.mic.get_frame()
+                    # ── 1. Get the next audio frame ──
+                    # This awaits until the mic callback puts a frame in the queue.
+                    # Normally takes ~80ms (one frame period).
+                    # If frames are buffered (e.g., after flush), returns instantly.
+                    frame = await self.mic.get_frame()
 
-                # ── 2. Feed to STT worker ──
-                # Just puts the numpy array into mic_queue. The worker thread
-                # will pick it up and process it on the GPU.
-                # This is instant (non-blocking).
-                self.stt.feed_frame(frame)
+                    # ── 2. Feed to STT worker ──
+                    # Just puts the numpy array into mic_queue. The worker thread
+                    # will pick it up and process it on the GPU.
+                    # This is instant (non-blocking).
+                    self.stt.feed_frame(frame)
 
-                # ── 3. Drain all available results ──
-                # The worker might have produced multiple results since our
-                # last drain (it runs at ~15ms per frame, we drain every ~80ms).
-                # Each result updates the EMA and may emit a word.
-                self._drain_and_process_results()
+                    # ── 3. Drain all available results ──
+                    # The worker might have produced multiple results since our
+                    # last drain (it runs at ~15ms per frame, we drain every ~80ms).
+                    # Each result updates the EMA and may emit a word.
+                    self._drain_and_process_results()
 
-                # ── 4. State-dependent decisions ──
-                if self.stt_end_of_flush_time is None:
-                    # === NORMAL MODE ===
-                    # Check if user has been silent too long (7s → "...")
-                    self._check_silence()
+                    # ── 4. State-dependent decisions ──
+                    if self.stt_end_of_flush_time is None:
+                        # === NORMAL MODE ===
+                        # Check if user has been silent too long (7s → "...")
+                        self._check_silence()
 
-                    # Check if EMA crossed pause threshold
-                    if self._determine_pause():
-                        self._start_flush()
-                else:
-                    # === FLUSH MODE ===
-                    # We detected a pause and fed silence to flush the pipeline.
-                    # Now we're waiting for the STT worker to process all those
-                    # silence frames. During this time:
-                    #   - We still feed real mic audio (so we don't lose frames)
-                    #   - We still drain results (late words arrive during flush!)
-                    #   - We skip pause/silence detection
-                    #
-                    # Once the worker has caught up → generate response.
-                    if self.stt.current_time > self.stt_end_of_flush_time:
-                        self.stt_end_of_flush_time = None
-                        self._generate_response()
+                        # Check if EMA crossed pause threshold
+                        if self._determine_pause():
+                            self._start_flush()
+                    else:
+                        # === FLUSH MODE ===
+                        # We detected a pause and fed silence to flush the pipeline.
+                        # Now we're waiting for the STT worker to process all those
+                        # silence frames. During this time:
+                        #   - We still feed real mic audio (so we don't lose frames)
+                        #   - We still drain results (late words arrive during flush!)
+                        #   - We skip pause/silence detection
+                        #
+                        # Once the worker has caught up → generate response.
+                        if self.stt.current_time > self.stt_end_of_flush_time:
+                            self.stt_end_of_flush_time = None
+                            self._generate_response()
 
         except KeyboardInterrupt:
             pass
@@ -242,7 +260,7 @@ class Orchestrator:
 
             # Debug: print EMA every ~1 second (every 12 frames) if DEBUG_MODE is True
             if DEBUG_MODE and self.stt._frame_count % 12 == 0 and result.pr_vad > 0.01:
-                print(f"  [dbg] raw={result.pr_vad:.3f} ema={self.ema.value:.3f}", end="\r", flush=True)
+                self.ui.debug_line = f"raw={result.pr_vad:.3f} ema={self.ema.value:.3f}"
 
             # If a word was emitted this frame, process it
             if result.word:
@@ -280,7 +298,7 @@ class Orchestrator:
         # If we had triggered a pause flush, but new words arrive, they aren't
         # done! Cancel the flush so we don't prematurely generate a response.
         if self.stt_end_of_flush_time is not None:
-            print("\n  ❌ Pause canceled (user continued speaking)", flush=True)
+            self.ui.debug_line = "❌ Pause canceled (user continued speaking)"
             self.stt_end_of_flush_time = None
 
         if is_new:
@@ -289,10 +307,6 @@ class Orchestrator:
             # This is exactly what Unmute does: handler line 465.
             self.ema.value = 0.0
             self.user_turn_start_time = time.time()  # Track when turn began
-            print(f"\n[YOU] {word}", end="", flush=True)
-        else:
-            # Subsequent word in the same turn — just append
-            print(f" {word}", end="", flush=True)
 
     # ================================================================
     # PAUSE DETECTION
@@ -344,7 +358,7 @@ class Orchestrator:
         audio and drains results. The flush is "done" when
         stt.current_time > stt_end_of_flush_time.
         """
-        print(f"\n\n  ⏸️  Pause detected (EMA={self.ema.value:.2f})")
+        self.ui.debug_line = f"⏸️ Pause detected (EMA={self.ema.value:.2f})"
 
         # Set the "finish line" — when the worker has processed this much
         # time, all the silence frames have been consumed.
@@ -381,7 +395,7 @@ class Orchestrator:
           - Sentence fragment boundary
         So it exits within ~80ms of being signaled.
         """
-        print(f"\n  ⚡ Interrupting bot...", flush=True)
+        self.ui.debug_line = "⚡ Interrupting bot..."
         self._interrupted.set()       # Signal the worker to stop
         self.speaker.clear()          # Dump all queued audio
         self._rechunk_buf = np.array([], dtype=np.float32)  # Reset buffer
@@ -412,7 +426,7 @@ class Orchestrator:
 
         # Get what the user said
         user_text = self.conversation.get_last_user_text()
-        print(f"  📝 User said: \"{user_text.strip()}\"")
+        self.ui.debug_line = f"📝 User said: \"{user_text.strip()}\""
 
         # Get cleaned conversation history
         messages = self.conversation.preprocessed_messages()
@@ -446,8 +460,7 @@ class Orchestrator:
         response_parts = []  # accumulate full response text
         t_start = time.time()
 
-        print(f"  🤖 Generating...", flush=True)
-        print(f"\n[BOT] ", end="", flush=True)
+        self.ui.debug_line = "🤖 Generating..."
 
         def _llm_stream():
             """Yield LLM tokens, printing them as they arrive.
@@ -455,7 +468,7 @@ class Orchestrator:
             for chunk in self.llm.generate_stream(messages):
                 if self._interrupted.is_set():
                     return
-                print(chunk, end="", flush=True)
+                # Print removed since UI loop catches chat_history changes!
                 response_parts.append(chunk)
                 yield chunk
 
@@ -505,12 +518,12 @@ class Orchestrator:
 
         if self._interrupted.is_set():
             # Bot was interrupted — add partial response + marker
-            print(f"\n  ⚡ Interrupted after {total_s:.2f}s")
+            self.ui.debug_line = f"⚡ Interrupted after {total_s:.2f}s"
             if full_response:
                 self.conversation.add_message_delta(full_response, "assistant")
                 self.conversation.mark_interruption()  # Appends "—"
         else:
-            print(f"\n  ⏱  {total_s:.2f}s | Fragments: {n_fragments}")
+            self.ui.debug_line = f"⏱  {total_s:.2f}s | Fragments: {n_fragments}"
             # Add the full response as an assistant message
             self.conversation.add_message_delta(full_response, "assistant")
 
@@ -605,4 +618,4 @@ class Orchestrator:
             # → _determine_pause() will trigger → bot responds
             self.conversation.add_message_delta("...", "user")
             self.last_activity_time = time.time()
-            print("\n  🤫 Long silence detected...")
+            self.ui.debug_line = "🤫 Long silence detected..."
