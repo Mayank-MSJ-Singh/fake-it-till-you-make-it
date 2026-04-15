@@ -276,6 +276,13 @@ class Orchestrator:
         if self._response_thread is not None:
             self._interrupt_bot()
 
+        # === FALSE ALARM PAUSE: user kept talking during the flush window ===
+        # If we had triggered a pause flush, but new words arrive, they aren't
+        # done! Cancel the flush so we don't prematurely generate a response.
+        if self.stt_end_of_flush_time is not None:
+            print("\n  ❌ Pause canceled (user continued speaking)", flush=True)
+            self.stt_end_of_flush_time = None
+
         if is_new:
             # FIRST word of a new turn!
             # Reset EMA to 0.0 so we don't immediately trigger pause.
@@ -311,10 +318,8 @@ class Orchestrator:
         if self._response_thread is not None:
             return False
 
-        # Don't trigger if user hasn't spoken long enough (prevents mid-sentence cutoff).
-        # Give the user at least 1.5 seconds to form their thought.
-        if time.time() - self.user_turn_start_time < 1.5:
-            return False
+        # (Removed the hardcoded 1.5s delay because the flush window + cancel mechanism
+        # gracefully handles mid-sentence pauses now).
 
         # Check if the smoothed pause probability crossed the threshold
         return self.ema.value > PAUSE_THRESHOLD
