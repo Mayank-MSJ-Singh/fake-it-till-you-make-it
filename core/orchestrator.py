@@ -112,6 +112,9 @@ class Orchestrator:
         from rich.live import Live
         self.live_context = Live(self.ui.get_renderable(), auto_refresh=False, screen=True)
 
+        # === POLISH ===
+        self._greeted = False
+
     # ================================================================
     # LIFECYCLE
     # ================================================================
@@ -145,15 +148,57 @@ class Orchestrator:
         print("=" * 50 + "\n")
 
     async def stop(self):
-        """Shut everything down gracefully.
-
-        Order: STT first (joins the worker thread), then mic and speaker.
-        """
+        """Shut everything down gracefully."""
         self.running = False
-        self.stt.stop()         # Sends None to worker, joins thread
-        self.mic.stop()         # Stops mic stream
-        self.speaker.stop()     # Stops speaker stream
-        print("\n👋 Goodbye!")
+        self.stt.stop()
+        self.mic.stop()
+        self.speaker.stop()
+        
+        self.ui.debug_line = "👋 Goodbye!"
+        if hasattr(self, 'live_context'):
+            # Update one last time to show goodbye message before screen=True restores term
+            try:
+                self.live_context.update(self.ui.get_renderable(), refresh=True)
+            except Exception:
+                pass
+                
+        # Minor sleep to allow underlying audio threads to clean up
+        await asyncio.sleep(0.5)
+
+    async def _greet(self):
+        """Say the initial greeting."""
+        greeting = "Hello! I'm listening. How can I help you today?"
+        self.ui.debug_line = "🗣️ Greeting..."
+        
+        # Add to history
+        self.conversation.add_message_delta(greeting, "assistant")
+        
+        # We'll run this in the response worker thread to avoid blocking the main loop
+        # We pass static text instead of prompting the LLM
+        self._response_thread = threading.Thread(
+            target=self._greeting_worker,
+            args=(greeting,),
+            daemon=True,
+        )
+        self._response_thread.start()
+        self._greeted = True
+
+    def _greeting_worker(self, text: str):
+        """Worker thread version for greeting to keep logic consistent."""
+        t_start = time.time()
+        for audio_chunk in self.tts.synthesize_stream(text):
+            if self._interrupted.is_set():
+                break
+            self._push_audio_to_speaker(audio_chunk)
+        
+        if not self._interrupted.is_set():
+            self._flush_rechunk_buffer()
+        
+        # Transition to waiting_for_user
+        self.conversation.add_message_delta("", "user")
+        self.last_activity_time = time.time()
+        self._response_thread = None
+        self.ui.debug_line = f"⏱  Greeting finished in {time.time() - t_start:.2f}s"
 
     # ================================================================
     # THE MAIN LOOP
@@ -176,6 +221,10 @@ class Orchestrator:
 
         try:
             with self.live_context as live:
+                # Trigger greeting once everything is ready
+                if not self._greeted:
+                    await self._greet()
+
                 while self.running:
                     # Update UI state before processing this frame
                     self.ui.update(
@@ -265,6 +314,12 @@ class Orchestrator:
             # If a word was emitted this frame, process it
             if result.word:
                 self._on_word(result.word)
+                
+                # Exit detection
+                clean_word = result.word.lower().strip()
+                if clean_word in ["bye.", "goodbye.", "exit.", "quit.", "bye", "goodbye"]:
+                    self.ui.debug_line = "👋 Exit command detected"
+                    self.running = False
 
     def _on_word(self, word: str):
         """Called when the STT produces a new word.
