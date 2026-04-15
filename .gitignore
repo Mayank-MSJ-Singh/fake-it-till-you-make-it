@@ -3,3 +3,11 @@ venv
 .env
 
 unmute 
+__pycache__/
+
+test*
+
+# Pocket TTS ONNX
+pocket-tts-onnx/
+pocket-tts-onnx*
+*.onnx
