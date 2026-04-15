@@ -353,12 +353,14 @@ class STTEngine:
                 # ── STEP 4: Extract pause probability ──
                 # vad_heads[2] = output of the THIRD extra head
                 #   Shape: (batch=1, seq=1, classes=6)
-                # We take class 0 — the "user is paused" probability.
+                # We take class 0 logit and pass through sigmoid to get
+                # a 0–1 probability. Sigmoid on a single logit preserves
+                # the signal's dynamic range better than softmax across
+                # all 6 classes (which squashes everything to ~0.15-0.35).
                 #
-                # This is what Unmute sends as prs[2] from the Rust server.
-                # Key property: stays at ~0.001 between words during speech,
-                # only rises to ~0.9 on genuine end-of-utterance pauses.
-                pr_vad = vad_heads[2][0, 0, 0].float().item()
+                # Key property: stays low during speech (even between words),
+                # only rises high on genuine end-of-utterance pauses.
+                pr_vad = torch.sigmoid(vad_heads[2][0, 0, 0]).float().item()
 
                 # ── STEP 5: Extract the text token ──
                 # text_tokens has shape (batch=1, codebooks=1, seq=1)

@@ -21,14 +21,20 @@ The loop has two modes:
     3. Skip pause/silence detection
     4. When STT has processed all silence frames → respond to user
 
+Response generation (LLM → TTS → Speaker) runs in a BACKGROUND THREAD
+so the main loop keeps ticking. This is critical: the mic must keep
+recording during the bot's response for interruption detection (Phase 7).
+
 This mirrors Unmute's receive() method: unmute/unmute_handler.py lines 280-370
 """
 import asyncio
 import math
+import threading
 import time
 
 import numpy as np
 import torch
+from stream2sentence import generate_sentences
 
 from core.audio_io import MicrophoneInput, SpeakerOutput
 from core.config import (
@@ -40,6 +46,7 @@ from core.conversation import Conversation
 from llm.llm_engine import LLMEngine
 from stt.stt_engine import STTEngine
 from stt.ema import ExponentialMovingAverage
+from tts.tts_engine import TTSEngine
 
 
 class Orchestrator:
@@ -47,8 +54,10 @@ class Orchestrator:
 
     Components it owns:
       - MicrophoneInput  (core/audio_io.py)   — captures audio
-      - SpeakerOutput    (core/audio_io.py)   — plays audio (for TTS later)
+      - SpeakerOutput    (core/audio_io.py)   — plays audio through speakers
       - STTEngine        (stt/stt_engine.py)   — GPU inference thread
+      - LLMEngine        (llm/llm_engine.py)   — generates text responses
+      - TTSEngine        (tts/tts_engine.py)   — converts text → audio (CPU)
       - Conversation     (core/conversation.py) — chat history + state machine
       - EMA              (stt/ema.py)          — smoothed pause signal
     """
@@ -56,9 +65,10 @@ class Orchestrator:
     def __init__(self, device: str = "cuda"):
         # === COMPONENTS ===
         self.mic = MicrophoneInput()       # Records audio from system mic
-        self.speaker = SpeakerOutput()     # Plays TTS audio (Phase 6)
+        self.speaker = SpeakerOutput()     # Plays TTS audio through speakers
         self.stt = STTEngine(device=device)  # GPU STT model + worker thread
         self.llm = LLMEngine()             # Language model for responses
+        self.tts = TTSEngine()             # Pocket TTS (CPU) for speech synthesis
         self.conversation = Conversation()   # Chat history + state machine
 
         # === PAUSE DETECTION ===
@@ -75,6 +85,19 @@ class Orchestrator:
         # === STATE ===
         self.running = False
         self.last_activity_time: float = 0  # Wall clock time of last word/event
+        self.user_turn_start_time: float = 0  # When the user started this turn
+
+        # === RESPONSE THREAD ===
+        # LLM→TTS generation runs in a background thread so the main loop
+        # keeps running (mic stays active for interruption detection).
+        # When None → no response being generated.
+        # When set → a thread is actively generating LLM text + TTS audio.
+        self._response_thread: threading.Thread | None = None
+
+        # === INTERRUPTION ===
+        # Set by the main loop when the user speaks during bot response.
+        # The response worker checks this flag and exits early.
+        self._interrupted = threading.Event()
 
         # === FLUSH STATE ===
         # When None → normal mode (check pauses)
@@ -93,13 +116,15 @@ class Orchestrator:
         Order matters:
           1. Load STT model (downloads if not cached, ~30s first time)
           2. Load LLM model (downloads if not cached, ~30s first time)
-          3. Warmup STT (compiles CUDA kernels with dummy frames, ~5s)
-          4. Start mic (begins recording immediately)
-          5. Start speaker (begins playback loop, plays silence until fed audio)
-          6. Start STT worker thread (opens streaming context, waits for frames)
+          3. Load TTS model (downloads if not cached, ~150MB)
+          4. Warmup STT (compiles CUDA kernels with dummy frames, ~5s)
+          5. Start mic (begins recording immediately)
+          6. Start speaker (begins playback loop, plays silence until fed audio)
+          7. Start STT worker thread (opens streaming context, waits for frames)
         """
         self.stt.load_model()   # Downloads STT model, loads onto GPU
         self.llm.load_model()   # Downloads LLM, loads onto configured device
+        self.tts.load_model()   # Downloads Pocket TTS, loads voice on CPU
         self.stt.warmup()       # Compiles CUDA kernels with dummy frames
 
         self.mic.start()        # Opens mic stream, callback starts firing
@@ -215,6 +240,10 @@ class Orchestrator:
             # dt=FRAME_TIME_SEC because each result represents one 80ms frame.
             self.ema.update(dt=FRAME_TIME_SEC, new_value=result.pr_vad)
 
+            # Debug: print EMA every ~1 second (every 12 frames)
+            if self.stt._frame_count % 12 == 0 and result.pr_vad > 0.01:
+                print(f"  [dbg] raw={result.pr_vad:.3f} ema={self.ema.value:.3f}", end="\r", flush=True)
+
             # If a word was emitted this frame, process it
             if result.word:
                 self._on_word(result.word)
@@ -241,11 +270,18 @@ class Orchestrator:
         is_new = self.conversation.add_message_delta(word, "user")
         self.last_activity_time = time.time()
 
+        # === INTERRUPTION: user spoke while bot is generating ===
+        # If the response thread is running, the user is talking over the bot.
+        # Stop everything immediately.
+        if self._response_thread is not None:
+            self._interrupt_bot()
+
         if is_new:
             # FIRST word of a new turn!
             # Reset EMA to 0.0 so we don't immediately trigger pause.
             # This is exactly what Unmute does: handler line 465.
             self.ema.value = 0.0
+            self.user_turn_start_time = time.time()  # Track when turn began
             print(f"\n[YOU] {word}", end="", flush=True)
         else:
             # Subsequent word in the same turn — just append
@@ -269,6 +305,15 @@ class Orchestrator:
         """
         # Only detect pauses when the user IS speaking
         if self.conversation.conversation_state() != "user_speaking":
+            return False
+
+        # Don't trigger a new response while one is already being generated
+        if self._response_thread is not None:
+            return False
+
+        # Don't trigger if user hasn't spoken long enough (prevents mid-sentence cutoff).
+        # Give the user at least 1.5 seconds to form their thought.
+        if time.time() - self.user_turn_start_time < 1.5:
             return False
 
         # Check if the smoothed pause probability crossed the threshold
@@ -313,22 +358,49 @@ class Orchestrator:
         # naive "wait for flush" approach.
 
     # ================================================================
-    # RESPONSE GENERATION
+    # INTERRUPTION (stop bot mid-speech when user talks over it)
+    # ================================================================
+
+    def _interrupt_bot(self):
+        """Stop the bot immediately when the user starts talking.
+
+        Called from _on_word() when a word arrives while _response_thread
+        is active. This does three things:
+          1. Set the _interrupted event → worker thread sees it and exits
+          2. Clear the speaker queue → audio stops immediately
+          3. Reset the rechunk buffer → no stale audio leaks
+
+        The worker thread checks _interrupted.is_set() at every:
+          - LLM token yield
+          - TTS audio chunk
+          - Sentence fragment boundary
+        So it exits within ~80ms of being signaled.
+        """
+        print(f"\n  ⚡ Interrupting bot...", flush=True)
+        self._interrupted.set()       # Signal the worker to stop
+        self.speaker.clear()          # Dump all queued audio
+        self._rechunk_buf = np.array([], dtype=np.float32)  # Reset buffer
+
+    # ================================================================
+    # RESPONSE GENERATION (LLM → stream2sentence → TTS → Speaker)
     # ================================================================
 
     def _generate_response(self):
-        """Generate a response after the flush is complete.
+        """Kick off response generation in a background thread.
 
         Called when stt.current_time > stt_end_of_flush_time, meaning
         all silence frames have been processed and any late words have
         been collected.
 
-        Flow:
-          1. Drain any final STT results from the flush
-          2. Get cleaned conversation history
-          3. Send to LLM → get response text
-          4. Add response to conversation
-          5. Transition to waiting_for_user state
+        The actual work (LLM streaming → sentence chunking → TTS → speaker)
+        happens in _response_worker() on a background thread. This lets
+        the main loop keep running so:
+          - The mic stays active (STT keeps processing)
+          - Interruption can be detected later (Phase 7)
+
+        The conversation state transitions to "bot_speaking" immediately
+        (add_message_delta with role="assistant"). When the worker finishes,
+        it transitions to "waiting_for_user".
         """
         # Drain any final words that arrived during the flush
         self._drain_and_process_results()
@@ -337,30 +409,158 @@ class Orchestrator:
         user_text = self.conversation.get_last_user_text()
         print(f"  📝 User said: \"{user_text.strip()}\"")
 
-        # Get cleaned conversation history (no empty messages, merged duplicates)
-        # and send to the LLM for a response.
+        # Get cleaned conversation history
         messages = self.conversation.preprocessed_messages()
-        print(f"  🤖 Thinking...", end="", flush=True)
-        response = self.llm.generate(messages)
-        print(f" done!")
 
-        # Add bot response to conversation history
-        self.conversation.add_message_delta(response, "assistant")
-        print(f"\n[BOT] {response}")
-        print()
+        # Reset interruption flag before launching new response
+        self._interrupted.clear()
 
-        # === CRITICAL: Transition to waiting_for_user ===
-        # Add an empty user message: {"role": "user", "content": ""}
-        # This makes conversation_state() return "waiting_for_user",
-        # which disables pause detection until the user speaks again.
-        #
-        # When the user says their first word, it appends to this empty
-        # message, add_message_delta() returns True (is_new_message),
-        # and the EMA gets reset to 0.0.
-        #
-        # Mirrors Unmute's _tts_loop() line 577.
-        self.conversation.add_message_delta("", "user")
+        # Launch the response worker thread
+        self._response_thread = threading.Thread(
+            target=self._response_worker,
+            args=(messages,),
+            daemon=True,
+        )
+        self._response_thread.start()
+
+    def _response_worker(self, messages: list[dict[str, str]]):
+        """Background thread: LLM → stream2sentence → TTS → Speaker.
+
+        Pipeline:
+          generate_stream(messages) → yields LLM tokens
+                ↓
+          generate_sentences()      → yields smart sentence fragments
+                ↓                     (after 10 chars or 7 words)
+          tts.synthesize_stream()   → yields audio chunks per sentence
+                ↓
+          speaker.put_audio()       → gapless playback through speakers
+
+        The main loop keeps running in parallel (mic + STT stay active).
+        When this method returns, conversation transitions to waiting_for_user.
+        """
+        response_parts = []  # accumulate full response text
+        t_start = time.time()
+
+        print(f"  🤖 Generating...", flush=True)
+        print(f"\n[BOT] ", end="", flush=True)
+
+        def _llm_stream():
+            """Yield LLM tokens, printing them as they arrive.
+            Stops early if interrupted."""
+            for chunk in self.llm.generate_stream(messages):
+                if self._interrupted.is_set():
+                    return
+                print(chunk, end="", flush=True)
+                response_parts.append(chunk)
+                yield chunk
+
+        # stream2sentence wraps the LLM stream and yields sentence fragments.
+        # It triggers TTS much sooner than waiting for punctuation:
+        #   - minimum_first_fragment_length=10  → first ~10 chars = first audio
+        #   - force_first_fragment_after_words=7 → force after 7 words max
+        #   - quick_yield=True → yield partial fragments eagerly
+        n_fragments = 0
+        for sentence in generate_sentences(
+            _llm_stream(),
+            minimum_sentence_length=12,
+            minimum_first_fragment_length=10,
+            force_first_fragment_after_words=7,
+            quick_yield_single_sentence_fragment=True,
+            cleanup_text_links=True,
+            cleanup_text_emojis=True,
+        ):
+            frag = sentence.strip()
+            if not frag:
+                continue
+
+            # Synthesize this fragment and push audio chunks to the speaker.
+            # synthesize_stream() yields chunks as they're generated (low TTFB).
+            # put_audio() pushes into the speaker's queue — the sounddevice
+            # callback pulls from it every 80ms for gapless playback.
+            for audio_chunk in self.tts.synthesize_stream(frag):
+                if self._interrupted.is_set():
+                    break
+                # Chunk from pocket_tts may be arbitrary length.
+                # SpeakerOutput._callback expects exactly SAMPLES_PER_FRAME.
+                # We need to rechunk into fixed-size blocks.
+                self._push_audio_to_speaker(audio_chunk)
+
+            if self._interrupted.is_set():
+                break
+            n_fragments += 1
+
+        # Flush any remaining audio from the rechunk buffer
+        if not self._interrupted.is_set():
+            self._flush_rechunk_buffer()
+
+        # All fragments synthesized and queued. The speaker will keep
+        # playing from its queue until it drains.
+        total_s = time.time() - t_start
+        full_response = "".join(response_parts).strip()
+
+        if self._interrupted.is_set():
+            # Bot was interrupted — add partial response + marker
+            print(f"\n  ⚡ Interrupted after {total_s:.2f}s")
+            if full_response:
+                self.conversation.add_message_delta(full_response, "assistant")
+                self.conversation.mark_interruption()  # Appends "—"
+        else:
+            print(f"\n  ⏱  {total_s:.2f}s | Fragments: {n_fragments}")
+            # Add the full response as an assistant message
+            self.conversation.add_message_delta(full_response, "assistant")
+
+            # Transition to waiting_for_user.
+            # Add empty user message so pause detection is disabled until
+            # the user speaks again. Mirrors Unmute's _tts_loop() line 577.
+            self.conversation.add_message_delta("", "user")
+
         self.last_activity_time = time.time()
+
+        # Clear thread reference
+        self._response_thread = None
+
+    # ================================================================
+    # AUDIO RECHUNKING (TTS chunks → fixed-size speaker frames)
+    # ================================================================
+
+    def __init_rechunk(self):
+        """Initialize the rechunk buffer. Called lazily."""
+        if not hasattr(self, '_rechunk_buf'):
+            self._rechunk_buf = np.array([], dtype=np.float32)
+
+    def _push_audio_to_speaker(self, audio_chunk: np.ndarray):
+        """Rechunk arbitrary-length TTS audio into SAMPLES_PER_FRAME blocks.
+
+        The SpeakerOutput._callback() expects each queue item to be exactly
+        SAMPLES_PER_FRAME (1920) samples. But TTS yields variable-length chunks.
+
+        We accumulate into a buffer and flush complete frames to the speaker.
+        Any remainder stays in the buffer for the next call.
+        """
+        self.__init_rechunk()
+
+        # Flatten and append to buffer
+        self._rechunk_buf = np.concatenate([
+            self._rechunk_buf,
+            audio_chunk.flatten().astype(np.float32),
+        ])
+
+        # Flush complete frames
+        while len(self._rechunk_buf) >= SAMPLES_PER_FRAME:
+            frame = self._rechunk_buf[:SAMPLES_PER_FRAME]
+            self._rechunk_buf = self._rechunk_buf[SAMPLES_PER_FRAME:]
+            self.speaker.put_audio(frame)
+
+    def _flush_rechunk_buffer(self):
+        """Flush any remaining audio in the rechunk buffer (zero-padded)."""
+        self.__init_rechunk()
+        if len(self._rechunk_buf) > 0:
+            padded = np.pad(
+                self._rechunk_buf,
+                (0, SAMPLES_PER_FRAME - len(self._rechunk_buf)),
+            )
+            self.speaker.put_audio(padded)
+            self._rechunk_buf = np.array([], dtype=np.float32)
 
     # ================================================================
     # SILENCE DETECTION
@@ -380,6 +580,18 @@ class Orchestrator:
         """
         # Only trigger during waiting_for_user state
         if self.conversation.conversation_state() != "waiting_for_user":
+            return
+
+        # Don't trigger silence while bot is still speaking
+        if self._response_thread is not None:
+            return
+
+        # Don't trigger while the speaker is still playing queued audio.
+        # The response thread finishes when audio is QUEUED, not when it's
+        # done PLAYING. Without this check, the silence timer fires while
+        # the bot is still audibly speaking → infinite self-talk loop.
+        if not self.speaker.audio_queue.empty():
+            self.last_activity_time = time.time()  # reset timer while playing
             return
 
         elapsed = time.time() - self.last_activity_time

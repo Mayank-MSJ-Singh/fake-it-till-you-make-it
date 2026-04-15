@@ -44,7 +44,7 @@ EMA_INITIAL_VALUE = 1.0           # Start as "paused" (user hasn't spoken yet)
 #   - Real pause:    signal ≈ 0.9   → EMA ≈ 0.9   → crosses 0.6 → PAUSE ✅
 #
 # Matches Unmute: unmute_handler.py line 387
-PAUSE_THRESHOLD = 0.6
+PAUSE_THRESHOLD = 0.70
 
 # ============================================================
 # 🤖  LLM (Large Language Model)
@@ -105,7 +105,7 @@ TTS_DEVICE = "cpu"                # "cpu" recommended (keeps GPU free for STT + 
 # If the user doesn't speak for this long after the bot finishes,
 # inject "..." into the conversation. This triggers a bot response
 # to fill the awkward silence (like "Are you still there?").
-SILENCE_TIMEOUT = 7.0             # Seconds of silence before bot responds
+SILENCE_TIMEOUT = 5.0             # Seconds of silence before bot responds
 
 # ============================================================
 # 🛑  INTERRUPTION (Phase 7 — not yet implemented)
