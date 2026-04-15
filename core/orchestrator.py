@@ -40,7 +40,7 @@ from core.audio_io import MicrophoneInput, SpeakerOutput
 from core.config import (
     SAMPLE_RATE, SAMPLES_PER_FRAME, FRAME_TIME_SEC,
     EMA_ATTACK_TIME, EMA_RELEASE_TIME, EMA_INITIAL_VALUE,
-    PAUSE_THRESHOLD, SILENCE_TIMEOUT,
+    PAUSE_THRESHOLD, SILENCE_TIMEOUT, DEBUG_MODE
 )
 from core.conversation import Conversation
 from llm.llm_engine import LLMEngine
@@ -240,8 +240,8 @@ class Orchestrator:
             # dt=FRAME_TIME_SEC because each result represents one 80ms frame.
             self.ema.update(dt=FRAME_TIME_SEC, new_value=result.pr_vad)
 
-            # Debug: print EMA every ~1 second (every 12 frames)
-            if self.stt._frame_count % 12 == 0 and result.pr_vad > 0.01:
+            # Debug: print EMA every ~1 second (every 12 frames) if DEBUG_MODE is True
+            if DEBUG_MODE and self.stt._frame_count % 12 == 0 and result.pr_vad > 0.01:
                 print(f"  [dbg] raw={result.pr_vad:.3f} ema={self.ema.value:.3f}", end="\r", flush=True)
 
             # If a word was emitted this frame, process it

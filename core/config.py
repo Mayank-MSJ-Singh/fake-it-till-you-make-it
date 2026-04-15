@@ -47,6 +47,13 @@ EMA_INITIAL_VALUE = 1.0           # Start as "paused" (user hasn't spoken yet)
 PAUSE_THRESHOLD = 0.70
 
 # ============================================================
+# 🐛  DEBUGGING
+# ============================================================
+# If True, prints raw semantic VAD (Voice Activity Detection) probabilities 
+# to the terminal to help tune the PAUSE_THRESHOLD.
+DEBUG_MODE = False
+
+# ============================================================
 # 🤖  LLM (Large Language Model)
 # ============================================================
 # The model that generates responses. Downloads automatically from
