@@ -3,3 +3,4 @@ venv
 .env
 
 unmute 
+pocket-tts-onnx
